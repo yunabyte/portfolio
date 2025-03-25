@@ -1,0 +1,64 @@
+name: Full Deploy (Frontend + Backend)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  backend:
+    name: Deploy Backend (FastAPI)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up SSH key
+        run: |
+          echo "${{ secrets.EC2_KEY }}" > key.pem
+          chmod 400 key.pem
+
+      - name: Deploy FastAPI to EC2
+        run: |
+          scp -i key.pem -o StrictHostKeyChecking=no backend/main.py ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/
+          scp -i key.pem -o StrictHostKeyChecking=no backend/.env ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/
+          ssh -i key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+            pip3 install --user fastapi uvicorn psycopg2-binary python-dotenv
+            pkill -f uvicorn || true
+            nohup uvicorn main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+          EOF
+
+  frontend:
+    name: Deploy Frontend (S3)
+    runs-on: ubuntu-latest
+    needs: backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dependencies & build
+        working-directory: ./frontend
+        run: |
+          npm install
+          npm run build
+          npm run export
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync frontend/out s3://$S3_BUCKET_NAME --delete
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ap-northeast-2
+          S3_BUCKET_NAME: yunatest-me-frontend
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_ID }} \
+            --paths "/*"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1

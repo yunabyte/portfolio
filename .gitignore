@@ -1,0 +1,5 @@
+terraform.tfvars
+*.pem
+.env
+__pycache__/
+*/.terraform
